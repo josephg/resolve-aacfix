@@ -17,6 +17,8 @@ Two lists are exported:
 Both are reported by `python -m aacpatch.locate`, which is the first thing to
 run against an unfamiliar build.
 """
+import re
+
 from .signature import Signature
 
 
@@ -39,6 +41,34 @@ def _v_cmp_imm(reg, imm):
     return check
 
 
+def cmp_imm_reg(cs, off, elfmap, buf, imm):
+    """If the instruction at `off` is `cmp r8d..r15d, <imm>`, return the 64-bit
+    name of that register (what e9tool takes as a trampoline argument), else
+    None.  For sites where the compiler's register choice is not stable across
+    point releases, so the register is read off the binary, not assumed."""
+    va = elfmap.off_to_va(off)
+    insn = next(cs.disasm(buf[off:off + 15], va, count=1), None)
+    if not insn or insn.mnemonic != "cmp":
+        return None
+    ops = insn.op_str.replace(",", "").split()
+    if len(ops) != 2 or not re.fullmatch(r"r(?:[89]|1[0-5])d", ops[0]):
+        return None
+    try:
+        if int(ops[1], 0) != imm:
+            return None
+    except ValueError:
+        return None
+    return ops[0][:-1]
+
+
+def _v_cmp_reg_imm(imm):
+    """Return a verifier asserting the instruction at match start is
+    `cmp <r8d..r15d>, <imm>`, whichever register it is."""
+    def check(cs, off, elfmap, buf):
+        return cmp_imm_reg(cs, off, elfmap, buf, imm) is not None
+    return check
+
+
 # Every signature anchors ONLY on bytes the patch never touches (opcodes, fourcc
 # constants, codec IDs, stable neighbouring instructions) and wildcards exactly
 # the bytes an edit mutates.  So a signature locates its site whether the binary
@@ -48,16 +78,21 @@ SIGNATURES = [
 
     # GATE 1 -- dispatch.  Anchor on the stable '.mp3' branch: both '.mp3' and
     # 'flac' jump to the same IOAudioFFMPEGCodec handler that AAC must reach.
-    #   cmp r15d,'.mp3' ; je <FFmpeg-handler>
-    # The additive patcher trampolines this site ("if r15=='aac ' goto handler")
+    #   cmp r15d,'.mp3' ; je <FFmpeg-handler>      (21.0.x - 21.1)
+    #   cmp r12d,'.mp3' ; je <FFmpeg-handler>      (21.1.1)
+    # The additive patcher trampolines this site ("if reg=='aac ' goto handler")
     # and reads the handler address from the je at +7.  (Anchoring only on the
     # '.mp3' branch keeps this robust to point releases that reorder the nearby
-    # spare/NONE branch, which the additive path never touches.)
+    # spare/NONE branch, which the additive path never touches.)  The ModRM
+    # byte -- i.e. which register holds the fourcc -- is wildcarded because it
+    # moves between point releases; the verifier pins it to `cmp r8d..r15d,
+    # '.mp3'` and additive.py reads the register back via cmp_imm_reg().
     Signature(
         name="gate1_dispatch",
-        pattern="41 81 ff 33 70 6d 2e 0f 84 ?? ?? ?? ??",     # cmp '.mp3'; je
+        pattern="41 81 ?? 33 70 6d 2e 0f 84 ?? ?? ?? ??",     # cmp '.mp3'; je
         where="exec",
         kind="computed",
+        verify=_v_cmp_reg_imm(0x2e6d7033),
         desc="route 'aac ' fourcc to IOAudioFFMPEGCodec (via the '.mp3' branch)",
     ),
 

@@ -118,6 +118,12 @@ the AAC-shaped hole, and reads the handler address out of the `je` — which mak
 it both version-independent and self-checking, since the target is derived rather
 than assumed.
 
+Which register holds the fourcc is the compiler's choice, and it does move
+between point releases: `r15d` up to 21.1, `r12d` in 21.1.1
+(`41 81 fc 33 70 6d 2e`). So the ModRM byte is wildcarded, capstone confirms the
+hit is `cmp r8d..r15d, '.mp3'`, and the register it names is the one handed to
+the trampoline.
+
 The first working version of this patch instead repointed the `NONE` branch at
 `aac `, which worked but cost the `NONE` fourcc. The trampoline form costs
 nothing.

@@ -12,6 +12,7 @@ Run: python -m pytest tests/   (PYTHONPATH=.:vendor/pylibs)
 import pytest
 
 from aacpatch.signature import Signature, parse_pattern, _find_all_masked
+from aacpatch.sites import SIGNATURES, cmp_imm_reg
 
 
 class FakeElfMap:
@@ -112,3 +113,37 @@ def test_equal_length_edit_is_enforced():
     # An in-place edit of a different length would shift every following byte.
     with pytest.raises(ValueError, match="length"):
         Signature(name="t", pattern="90", orig=b"\x01\x02", new=b"\x03")
+
+
+# --- gate1: the fourcc register varies by build --------------------------
+
+GATE1 = next(s for s in SIGNATURES if s.name == "gate1_dispatch")
+MP3 = 0x2e6d7033
+
+
+def _gate1_buf(modrm):
+    # cmp <r/m32 per modrm>, '.mp3' ; je +0x10, padded with nops
+    site = bytes([0x41, 0x81, modrm]) + b"3pm." + b"\x0f\x84\x10\x00\x00\x00"
+    return b"\x90" * 16 + site + b"\x90" * 16
+
+
+@pytest.mark.parametrize("modrm,reg", [(0xff, "r15"),     # 21.0.x - 21.1
+                                       (0xfc, "r12")])    # 21.1.1
+def test_gate1_locates_whichever_register_holds_the_fourcc(modrm, reg):
+    from capstone import Cs, CS_ARCH_X86, CS_MODE_64
+    buf = _gate1_buf(modrm)
+    em = FakeElfMap(len(buf))
+    off = GATE1.locate(buf, em)
+    assert off == 16
+    # ... and the register the trampoline is given is the one in the binary
+    assert cmp_imm_reg(Cs(CS_ARCH_X86, CS_MODE_64), off, em, buf, MP3) == reg
+
+
+@pytest.mark.parametrize("modrm", [0x3f,     # cmp dword ptr [r15], '.mp3'
+                                   0xc7])    # add r15d, '.mp3'
+def test_gate1_refuses_what_is_not_a_register_compare(modrm):
+    # Same surrounding bytes, but no register holding the fourcc to hand the
+    # trampoline: the wildcarded ModRM must not let these through.
+    buf = _gate1_buf(modrm)
+    with pytest.raises(LookupError, match="verification"):
+        GATE1.locate(buf, FakeElfMap(len(buf)))

@@ -8,7 +8,8 @@
  * Used with e9tool's `if CALL goto` form, i.e.  if (a = redirect(...)) goto a;
  *
  *   redirect(val, wanted, target):
- *       gate1  : if fourcc r15 == 'aac '(0x61616320) -> FFmpeg-codec handler
+ *       gate1  : if fourcc reg == 'aac '(0x61616320) -> FFmpeg-codec handler
+ *                (r15 up to 21.1, r12 in 21.1.1: read off each build)
  *       gate3a : if codec_id ecx == AAC(0x15002)      -> extradata FETCH
  *       gate3b : if codec_id edi == AAC(0x15002)      -> extradata COPY (skips
  *                the 34-byte ALAC size gate; COPY reads the blob from the stack)
